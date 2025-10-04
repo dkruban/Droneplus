@@ -4,11 +4,11 @@
   "description": "Droneplus Link Manager",
   "main": "server.js",
   "scripts": {
-    "prestart": "mkdir -p /opt/render/project/data",
     "start": "node server.js"
   },
   "dependencies": {
     "express": "^4.18.2",
-    "cors": "^2.8.5"
+    "cors": "^2.8.5",
+    "axios": "^1.6.5"
   }
 }
