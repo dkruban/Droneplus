@@ -8,7 +8,9 @@ const port = process.env.PORT || 3000;
 // Middleware
 app.use(cors());
 app.use(express.json());
-app.use(express.static('.'));
+
+// Serve static files from the current directory
+app.use(express.static(__dirname));
 
 // Data file path
 const dataFilePath = path.join(__dirname, 'data.json');
@@ -191,9 +193,49 @@ app.get('/api/activities', (req, res) => {
   res.json(data.activities);
 });
 
-// Serve the main page
+// Serve the main page - with better error handling
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'index.html'));
+  const indexPath = path.join(__dirname, 'index.html');
+  
+  if (fs.existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else {
+    // If index.html doesn't exist, create a basic one
+    const basicHtml = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Droneplus - Setup Required</title>
+        <style>
+            body { font-family: Arial, sans-serif; padding: 20px; background: #0a0a0a; color: white; }
+            .container { max-width: 800px; margin: 0 auto; }
+            .error { color: #ff453a; }
+            .success { color: #32d74b; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Droneplus Server</h1>
+            <p class="success">✅ Server is running successfully!</p>
+            <p class="error">⚠️ index.html file not found. Please upload the index.html file to your repository.</p>
+            <h3>API Endpoints Available:</h3>
+            <ul>
+                <li>GET /api/links - Get all links</li>
+                <li>POST /api/links - Add a new link</li>
+                <li>PUT /api/links/:id - Update a link</li>
+                <li>DELETE /api/links/:id - Delete a link</li>
+                <li>GET /api/activities - Get activities</li>
+            </ul>
+        </div>
+    </body>
+    </html>`;
+    res.send(basicHtml);
+  }
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
 app.listen(port, () => {
