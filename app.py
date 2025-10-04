@@ -116,7 +116,8 @@ def analyze_resume_with_gemini(resume_text, api_key):
     """
 
     try:
-        model = genai.GenerativeModel('gemini-pro')
+        # Using the correct model name for the current Gemini API
+        model = genai.GenerativeModel('gemini-1.5-flash')
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
