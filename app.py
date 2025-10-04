@@ -1,10 +1,10 @@
-# app.py
+# app.py - Using Google Gemini API (Free Tier)
 
 import streamlit as st
-import openai
 import io
 import PyPDF2
 import os
+import google.generativeai as genai
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
@@ -23,15 +23,9 @@ st.markdown("""
 }
 
 /* Sidebar styling */
-.css-1d391kg { /* This class targets the sidebar */
+.css-1d391kg {
     background: rgba(255, 255, 255, 0.95);
     backdrop-filter: blur(10px);
-}
-
-/* Main content area */
-.stBlock {
-    padding-top: 2rem;
-    padding-bottom: 2rem;
 }
 
 /* Custom card component */
@@ -77,9 +71,9 @@ def extract_text_from_pdf(pdf_file):
         st.error(f"Error reading PDF file: {e}")
         return None
 
-def analyze_resume_with_openai(resume_text, api_key):
-    """Sends resume text to OpenAI for analysis."""
-    openai.api_key = api_key
+def analyze_resume_with_gemini(resume_text, api_key):
+    """Sends resume text to Google Gemini for analysis."""
+    genai.configure(api_key=api_key)
     
     prompt = f"""
     You are an expert career coach and an experienced Technical Recruiter. Analyze the following resume text.
@@ -111,21 +105,15 @@ def analyze_resume_with_openai(resume_text, api_key):
     """
 
     try:
-        response = openai.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.5,
-        )
-        return response.choices[0].message.content
+        model = genai.GenerativeModel('gemini-pro')
+        response = model.generate_content(prompt)
+        return response.text
     except Exception as e:
-        st.error(f"An error occurred with the OpenAI API: {e}")
+        st.error(f"An error occurred with the Gemini API: {e}")
         return None
 
 def parse_analysis(analysis_text):
-    """Parses the structured text from OpenAI into a dictionary."""
+    """Parses the structured text from Gemini into a dictionary."""
     if not analysis_text:
         return {}
     
@@ -169,17 +157,17 @@ def parse_analysis(analysis_text):
 # --- SIDEBAR ---
 with st.sidebar:
     st.title("⚙️ App Info")
-    st.info("This app is deployed on Render. Your API key is securely configured as an environment variable.")
+    st.info("This app is deployed on Render. Your Gemini API key is securely configured as an environment variable.")
 
 # --- MAIN PAGE ---
 st.markdown("<h1 style='text-align: center; color: white; padding: 1rem;'>Welcome to Resume Analyzer Pro 🚀</h1>", unsafe_allow_html=True)
 st.markdown("<p style='text-align: center; color: white; font-size: 1.2rem;'>Upload your resume to get instant AI-powered feedback.</p>", unsafe_allow_html=True)
 
 # Get API Key from Environment Variable (for Render/Production)
-api_key = os.getenv("OPENAI_API_KEY")
+api_key = os.getenv("GEMINI_API_KEY")
 
 if not api_key:
-    st.error("OpenAI API Key is not configured on the server. Please add it as an Environment Variable in Render.")
+    st.error("Gemini API Key is not configured on the server. Please add it as an Environment Variable in Render.")
     st.stop()
 
 # File uploader
@@ -194,7 +182,7 @@ if uploaded_file is not None:
         with st.spinner("🤖 AI is reading and analyzing your resume... Please wait."):
             resume_text = extract_text_from_pdf(uploaded_file)
             if resume_text:
-                analysis_text = analyze_resume_with_openai(resume_text, api_key)
+                analysis_text = analyze_resume_with_gemini(resume_text, api_key)
                 if analysis_text:
                     parsed_data = parse_analysis(analysis_text)
                     st.success("Analysis Complete! Check out your results below.")
