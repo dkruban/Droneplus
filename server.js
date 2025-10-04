@@ -9,10 +9,10 @@ const port = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Serve static files from the current directory
-app.use(express.static(__dirname));
+// Serve static files from the public directory
+app.use(express.static(path.join(__dirname, 'public')));
 
-// Data file path
+// Data file path - store in the root directory
 const dataFilePath = path.join(__dirname, 'data.json');
 
 // Initialize data file if it doesn't exist
@@ -195,7 +195,7 @@ app.get('/api/activities', (req, res) => {
 
 // Serve the main page - with better error handling
 app.get('/', (req, res) => {
-  const indexPath = path.join(__dirname, 'index.html');
+  const indexPath = path.join(__dirname, 'public', 'index.html');
   
   if (fs.existsSync(indexPath)) {
     res.sendFile(indexPath);
@@ -217,7 +217,7 @@ app.get('/', (req, res) => {
         <div class="container">
             <h1>Droneplus Server</h1>
             <p class="success">✅ Server is running successfully!</p>
-            <p class="error">⚠️ index.html file not found. Please upload the index.html file to your repository.</p>
+            <p class="error">⚠️ public/index.html file not found. Please check your file structure.</p>
             <h3>API Endpoints Available:</h3>
             <ul>
                 <li>GET /api/links - Get all links</li>
