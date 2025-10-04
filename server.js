@@ -1,9 +1,14 @@
 const express = require('express');
 const cors = require('cors');
+const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const app = express();
 const port = process.env.PORT || 10000;
+
+// GitHub configuration
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN || 'your-github-token-here';
+const GIST_ID = process.env.GIST_ID || 'your-gist-id-here';
 
 // Add error handlers
 process.on('uncaughtException', (err) => {
@@ -31,104 +36,109 @@ if (fs.existsSync(publicPath)) {
   app.use(express.static(rootPath));
 }
 
-// Use Render's persistent disk for data storage
-const dataDir = '/opt/render/project/data';
-const dataFilePath = path.join(dataDir, 'data.json');
+// Local cache for performance
+let dataCache = { links: [], activities: [] };
+let lastSyncTime = Date.now();
+let syncInProgress = false;
 
-// Create data directory if it doesn't exist
-function ensureDataDir() {
+// GitHub Gist API functions
+async function fetchGist() {
   try {
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
-      console.log(`Created data directory: ${dataDir}`);
-    }
+    const response = await axios.get(`https://api.github.com/gists/${GIST_ID}`, {
+      headers: {
+        'Authorization': `token ${GITHUB_TOKEN}`,
+        'User-Agent': 'Droneplus-App'
+      }
+    });
+    
+    const content = response.data.files['links.json'].content;
+    const data = JSON.parse(content);
+    
+    dataCache = data;
+    lastSyncTime = Date.now();
+    
+    console.log(`✅ Synced from GitHub: ${data.links.length} links, ${data.activities.length} activities`);
+    return data;
   } catch (error) {
-    console.error('Error creating data directory:', error);
+    console.error('❌ Error fetching gist:', error.message);
+    return dataCache; // Return cached data on error
   }
 }
 
-// Lock mechanism to prevent race conditions
-let isWriting = false;
-
-// Initialize data file if it doesn't exist
-function initializeDataFile() {
-  try {
-    ensureDataDir();
-    if (!fs.existsSync(dataFilePath)) {
-      const initialData = { links: [], activities: [] };
-      fs.writeFileSync(dataFilePath, JSON.stringify(initialData, null, 2));
-      console.log('Created data.json file at:', dataFilePath);
-    } else {
-      console.log('data.json file exists at:', dataFilePath);
-    }
-  } catch (error) {
-    console.error('Error initializing data file:', error);
+async function updateGist(data) {
+  if (syncInProgress) {
+    console.log('⏳ Sync already in progress, skipping...');
+    return false;
   }
+  
+  syncInProgress = true;
+  
+  try {
+    const response = await axios.patch(`https://api.github.com/gists/${GIST_ID}`, {
+      files: {
+        "links.json": {
+          content: JSON.stringify(data, null, 2)
+        }
+      }
+    }, {
+      headers: {
+        'Authorization': `token ${GITHUB_TOKEN}`,
+        'User-Agent': 'Droneplus-App'
+      }
+    });
+    
+    dataCache = data;
+    lastSyncTime = Date.now();
+    
+    console.log(`✅ Updated GitHub: ${data.links.length} links, ${data.activities.length} activities`);
+    return true;
+  } catch (error) {
+    console.error('❌ Error updating gist:', error.message);
+    return false;
+  } finally {
+    syncInProgress = false;
+  }
+}
+
+// Initialize data from GitHub
+async function initializeData() {
+  if (!GITHUB_TOKEN || !GIST_ID) {
+    console.error('❌ GitHub token or Gist ID not configured!');
+    return;
+  }
+  
+  await fetchGist();
+  
+  // Auto-sync every 5 minutes
+  setInterval(async () => {
+    if (Date.now() - lastSyncTime > 4 * 60 * 1000) { // 4 minutes
+      await fetchGist();
+    }
+  }, 5 * 60 * 1000); // 5 minutes
 }
 
 // Initialize on startup
-initializeDataFile();
+initializeData();
 
-// Helper function to read data with retry mechanism
-function readData(retries = 3) {
-  try {
-    if (!fs.existsSync(dataFilePath)) {
-      initializeDataFile();
-    }
-    
-    // Wait if file is being written
-    if (isWriting) {
-      setTimeout(() => readData(retries - 1), 100);
-      return { links: [], activities: [] };
-    }
-    
-    const data = fs.readFileSync(dataFilePath, 'utf8');
-    const parsed = JSON.parse(data);
-    console.log(`Read data: ${parsed.links.length} links, ${parsed.activities.length} activities`);
-    return parsed;
-  } catch (error) {
-    console.error('Error reading data:', error);
-    if (retries > 0) {
-      setTimeout(() => readData(retries - 1), 100);
-    }
-    return { links: [], activities: [] };
-  }
+// Helper functions
+function readData() {
+  return dataCache;
 }
 
-// Helper function to write data with lock mechanism
-function writeData(data, retries = 3) {
-  return new Promise((resolve, reject) => {
-    if (isWriting) {
-      setTimeout(() => writeData(data, retries - 1).then(resolve).catch(reject), 100);
-      return;
-    }
-    
-    isWriting = true;
-    try {
-      ensureDataDir(); // Ensure directory exists before writing
-      const jsonString = JSON.stringify(data, null, 2);
-      fs.writeFileSync(dataFilePath, jsonString);
-      console.log(`Data saved: ${data.links.length} links, ${data.activities.length} activities`);
-      isWriting = false;
-      resolve(true);
-    } catch (error) {
-      console.error('Error writing data:', error);
-      isWriting = false;
-      if (retries > 0) {
-        setTimeout(() => writeData(data, retries - 1).then(resolve).catch(reject), 100);
-      } else {
-        reject(error);
-      }
-    }
-  });
+async function writeData(data) {
+  const success = await updateGist(data);
+  if (success) {
+    dataCache = data;
+  }
+  return success;
 }
 
 // API Routes
 
 // Get all links
-app.get('/api/links', (req, res) => {
+app.get('/api/links', async (req, res) => {
   try {
-    const data = readData();
+    const data = await fetchGist();
     res.json(data.links);
   } catch (error) {
     console.error('Error in /api/links:', error);
@@ -142,8 +152,8 @@ app.post('/api/links', async (req, res) => {
     const { name, url, description, category } = req.body;
     console.log('Adding link:', { name, url, description, category });
     
-    // Read current data
-    const data = readData();
+    // Get current data
+    const data = await fetchGist();
     
     const newLink = {
       id: Date.now().toString(36) + Math.random().toString(36).substr(2),
@@ -152,7 +162,8 @@ app.post('/api/links', async (req, res) => {
       description,
       category,
       clicks: 0,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      permanent: true
     };
     
     // Add new link to the beginning of the array
@@ -166,14 +177,18 @@ app.post('/api/links', async (req, res) => {
       timestamp: new Date().toISOString()
     });
     
-    // Keep only last 10 activities
-    if (data.activities.length > 10) data.activities.pop();
+    // Keep only last 50 activities
+    if (data.activities.length > 50) data.activities.pop();
     
-    // Write data back to file
-    await writeData(data);
+    // Update GitHub
+    const success = await updateGist(data);
     
-    console.log('Link added successfully:', newLink.id);
-    res.json(newLink);
+    if (success) {
+      console.log('Link added successfully:', newLink.id);
+      res.json(newLink);
+    } else {
+      res.status(500).json({ error: 'Failed to save link to GitHub' });
+    }
   } catch (error) {
     console.error('Error in POST /api/links:', error);
     res.status(500).json({ error: 'Failed to add link' });
@@ -186,7 +201,7 @@ app.put('/api/links/:id', async (req, res) => {
     const { id } = req.params;
     const { name, url, description, category } = req.body;
     
-    const data = readData();
+    const data = await fetchGist();
     const linkIndex = data.links.findIndex(link => link.id === id);
     
     if (linkIndex !== -1) {
@@ -196,7 +211,8 @@ app.put('/api/links/:id', async (req, res) => {
         url,
         description,
         category,
-        updatedAt: new Date().toISOString()
+        updatedAt: new Date().toISOString(),
+        permanent: true
       };
       
       // Add activity
@@ -207,11 +223,16 @@ app.put('/api/links/:id', async (req, res) => {
         timestamp: new Date().toISOString()
       });
       
-      // Keep only last 10 activities
-      if (data.activities.length > 10) data.activities.pop();
+      // Keep only last 50 activities
+      if (data.activities.length > 50) data.activities.pop();
       
-      await writeData(data);
-      res.json(data.links[linkIndex]);
+      const success = await updateGist(data);
+      
+      if (success) {
+        res.json(data.links[linkIndex]);
+      } else {
+        res.status(500).json({ error: 'Failed to update link' });
+      }
     } else {
       res.status(404).json({ error: 'Link not found' });
     }
@@ -225,7 +246,7 @@ app.put('/api/links/:id', async (req, res) => {
 app.delete('/api/links/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const data = readData();
+    const data = await fetchGist();
     
     const linkIndex = data.links.findIndex(link => link.id === id);
     
@@ -241,11 +262,16 @@ app.delete('/api/links/:id', async (req, res) => {
         timestamp: new Date().toISOString()
       });
       
-      // Keep only last 10 activities
-      if (data.activities.length > 10) data.activities.pop();
+      // Keep only last 50 activities
+      if (data.activities.length > 50) data.activities.pop();
       
-      await writeData(data);
-      res.json({ success: true });
+      const success = await updateGist(data);
+      
+      if (success) {
+        res.json({ success: true });
+      } else {
+        res.status(500).json({ error: 'Failed to delete link' });
+      }
     } else {
       res.status(404).json({ error: 'Link not found' });
     }
@@ -259,7 +285,7 @@ app.delete('/api/links/:id', async (req, res) => {
 app.post('/api/links/:id/click', async (req, res) => {
   try {
     const { id } = req.params;
-    const data = readData();
+    const data = await fetchGist();
     
     const linkIndex = data.links.findIndex(link => link.id === id);
     
@@ -274,11 +300,16 @@ app.post('/api/links/:id/click', async (req, res) => {
         timestamp: new Date().toISOString()
       });
       
-      // Keep only last 10 activities
-      if (data.activities.length > 10) data.activities.pop();
+      // Keep only last 50 activities
+      if (data.activities.length > 50) data.activities.pop();
       
-      await writeData(data);
-      res.json({ clicks: data.links[linkIndex].clicks });
+      const success = await updateGist(data);
+      
+      if (success) {
+        res.json({ clicks: data.links[linkIndex].clicks });
+      } else {
+        res.status(500).json({ error: 'Failed to update clicks' });
+      }
     } else {
       res.status(404).json({ error: 'Link not found' });
     }
@@ -289,13 +320,28 @@ app.post('/api/links/:id/click', async (req, res) => {
 });
 
 // Get activities
-app.get('/api/activities', (req, res) => {
+app.get('/api/activities', async (req, res) => {
   try {
-    const data = readData();
+    const data = await fetchGist();
     res.json(data.activities);
   } catch (error) {
     console.error('Error in /api/activities:', error);
     res.status(500).json({ error: 'Failed to fetch activities' });
+  }
+});
+
+// Sync endpoint
+app.post('/api/sync', async (req, res) => {
+  try {
+    const data = await fetchGist();
+    res.json({ 
+      success: true, 
+      message: 'Synced from GitHub',
+      linksCount: data.links.length,
+      lastSync: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -308,41 +354,16 @@ app.get('/debug', (req, res) => {
       publicExists: fs.existsSync(publicPath),
       indexInRoot: fs.existsSync(path.join(rootPath, 'index.html')),
       indexInPublic: fs.existsSync(path.join(publicPath, 'index.html')),
-      dataExists: fs.existsSync(dataFilePath),
-      dataContent: fs.existsSync(dataFilePath) ? JSON.parse(fs.readFileSync(dataFilePath, 'utf8')) : 'not found',
       workingDir: __dirname,
       publicPath: publicPath,
-      dataDir: dataDir,
-      dataDirExists: fs.existsSync(dataDir),
-      isWriting: isWriting
+      cacheSize: dataCache.links.length,
+      lastSyncTime: new Date(lastSyncTime).toISOString(),
+      syncInProgress: syncInProgress,
+      githubConfigured: !!(GITHUB_TOKEN && GIST_ID),
+      githubTokenSet: !!GITHUB_TOKEN,
+      gistIdSet: !!GIST_ID
     };
     res.json(files);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Backup/Restore endpoints
-app.post('/api/backup', (req, res) => {
-  try {
-    const data = readData();
-    const backupPath = path.join(dataDir, `backup-${Date.now()}.json`);
-    fs.writeFileSync(backupPath, JSON.stringify(data, null, 2));
-    res.json({ success: true, backupPath });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.post('/api/restore', (req, res) => {
-  try {
-    const { data } = req.body;
-    if (data) {
-      writeData(data);
-      res.json({ success: true });
-    } else {
-      res.status(400).json({ error: 'No data provided' });
-    }
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -388,18 +409,18 @@ app.get('/health', (req, res) => {
   res.json({ 
     status: 'OK', 
     timestamp: new Date().toISOString(),
-    dataFileExists: fs.existsSync(dataFilePath),
-    dataDirExists: fs.existsSync(dataDir),
-    isWriting: isWriting
+    linksCount: dataCache.links.length,
+    lastSyncTime: new Date(lastSyncTime).toISOString(),
+    githubConfigured: !!(GITHUB_TOKEN && GIST_ID),
+    uptime: process.uptime()
   });
 });
 
 // Start server with error handling
 const server = app.listen(port, () => {
-  console.log(`Droneplus server listening at http://localhost:${port}`);
-  console.log(`Working directory: ${__dirname}`);
-  console.log(`Data directory: ${dataDir}`);
-  console.log(`Data file: ${dataFilePath}`);
+  console.log(`🚁 Droneplus server listening at http://localhost:${port}`);
+  console.log(`📊 GitHub Gist configured: ${!!(GITHUB_TOKEN && GIST_ID)}`);
+  console.log(`📝 Loaded ${dataCache.links.length} links from GitHub`);
 });
 
 server.on('error', (err) => {
