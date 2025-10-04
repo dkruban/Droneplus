@@ -1,2 +1,2 @@
 # RAA
-resume-analyzer-app 
+resume-analyzer-app - A professional AI-powered resume analyzer built with Streamlit.
