@@ -3,7 +3,7 @@ const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 const app = express();
-const port = process.env.PORT || 10000; // Changed to 10000
+const port = process.env.PORT || 10000;
 
 // Add error handlers
 process.on('uncaughtException', (err) => {
@@ -34,6 +34,9 @@ if (fs.existsSync(publicPath)) {
 // Data file path - store in the root directory
 const dataFilePath = path.join(__dirname, 'data.json');
 
+// Lock mechanism to prevent race conditions
+let isWriting = false;
+
 // Initialize data file if it doesn't exist
 function initializeDataFile() {
   try {
@@ -52,30 +55,57 @@ function initializeDataFile() {
 // Initialize on startup
 initializeDataFile();
 
-// Helper function to read data
-function readData() {
+// Helper function to read data with retry mechanism
+function readData(retries = 3) {
   try {
     if (!fs.existsSync(dataFilePath)) {
       initializeDataFile();
     }
+    
+    // Wait if file is being written
+    if (isWriting) {
+      setTimeout(() => readData(retries - 1), 100);
+      return { links: [], activities: [] };
+    }
+    
     const data = fs.readFileSync(dataFilePath, 'utf8');
-    return JSON.parse(data);
+    const parsed = JSON.parse(data);
+    console.log(`Read data: ${parsed.links.length} links, ${parsed.activities.length} activities`);
+    return parsed;
   } catch (error) {
     console.error('Error reading data:', error);
+    if (retries > 0) {
+      setTimeout(() => readData(retries - 1), 100);
+    }
     return { links: [], activities: [] };
   }
 }
 
-// Helper function to write data
-function writeData(data) {
-  try {
-    fs.writeFileSync(dataFilePath, JSON.stringify(data, null, 2));
-    console.log('Data saved successfully');
-    return true;
-  } catch (error) {
-    console.error('Error writing data:', error);
-    return false;
-  }
+// Helper function to write data with lock mechanism
+function writeData(data, retries = 3) {
+  return new Promise((resolve, reject) => {
+    if (isWriting) {
+      setTimeout(() => writeData(data, retries - 1).then(resolve).catch(reject), 100);
+      return;
+    }
+    
+    isWriting = true;
+    try {
+      const jsonString = JSON.stringify(data, null, 2);
+      fs.writeFileSync(dataFilePath, jsonString);
+      console.log(`Data saved: ${data.links.length} links, ${data.activities.length} activities`);
+      isWriting = false;
+      resolve(true);
+    } catch (error) {
+      console.error('Error writing data:', error);
+      isWriting = false;
+      if (retries > 0) {
+        setTimeout(() => writeData(data, retries - 1).then(resolve).catch(reject), 100);
+      } else {
+        reject(error);
+      }
+    }
+  });
 }
 
 // API Routes
@@ -92,9 +122,12 @@ app.get('/api/links', (req, res) => {
 });
 
 // Add a new link
-app.post('/api/links', (req, res) => {
+app.post('/api/links', async (req, res) => {
   try {
     const { name, url, description, category } = req.body;
+    console.log('Adding link:', { name, url, description, category });
+    
+    // Read current data
     const data = readData();
     
     const newLink = {
@@ -107,6 +140,7 @@ app.post('/api/links', (req, res) => {
       createdAt: new Date().toISOString()
     };
     
+    // Add new link to the beginning of the array
     data.links.unshift(newLink);
     
     // Add activity
@@ -120,11 +154,11 @@ app.post('/api/links', (req, res) => {
     // Keep only last 10 activities
     if (data.activities.length > 10) data.activities.pop();
     
-    if (writeData(data)) {
-      res.json(newLink);
-    } else {
-      res.status(500).json({ error: 'Failed to save link' });
-    }
+    // Write data back to file
+    await writeData(data);
+    
+    console.log('Link added successfully:', newLink.id);
+    res.json(newLink);
   } catch (error) {
     console.error('Error in POST /api/links:', error);
     res.status(500).json({ error: 'Failed to add link' });
@@ -132,12 +166,12 @@ app.post('/api/links', (req, res) => {
 });
 
 // Update a link
-app.put('/api/links/:id', (req, res) => {
+app.put('/api/links/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const { name, url, description, category } = req.body;
-    const data = readData();
     
+    const data = readData();
     const linkIndex = data.links.findIndex(link => link.id === id);
     
     if (linkIndex !== -1) {
@@ -161,11 +195,8 @@ app.put('/api/links/:id', (req, res) => {
       // Keep only last 10 activities
       if (data.activities.length > 10) data.activities.pop();
       
-      if (writeData(data)) {
-        res.json(data.links[linkIndex]);
-      } else {
-        res.status(500).json({ error: 'Failed to update link' });
-      }
+      await writeData(data);
+      res.json(data.links[linkIndex]);
     } else {
       res.status(404).json({ error: 'Link not found' });
     }
@@ -176,7 +207,7 @@ app.put('/api/links/:id', (req, res) => {
 });
 
 // Delete a link
-app.delete('/api/links/:id', (req, res) => {
+app.delete('/api/links/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const data = readData();
@@ -198,11 +229,8 @@ app.delete('/api/links/:id', (req, res) => {
       // Keep only last 10 activities
       if (data.activities.length > 10) data.activities.pop();
       
-      if (writeData(data)) {
-        res.json({ success: true });
-      } else {
-        res.status(500).json({ error: 'Failed to delete link' });
-      }
+      await writeData(data);
+      res.json({ success: true });
     } else {
       res.status(404).json({ error: 'Link not found' });
     }
@@ -213,7 +241,7 @@ app.delete('/api/links/:id', (req, res) => {
 });
 
 // Increment link clicks
-app.post('/api/links/:id/click', (req, res) => {
+app.post('/api/links/:id/click', async (req, res) => {
   try {
     const { id } = req.params;
     const data = readData();
@@ -234,11 +262,8 @@ app.post('/api/links/:id/click', (req, res) => {
       // Keep only last 10 activities
       if (data.activities.length > 10) data.activities.pop();
       
-      if (writeData(data)) {
-        res.json({ clicks: data.links[linkIndex].clicks });
-      } else {
-        res.status(500).json({ error: 'Failed to update clicks' });
-      }
+      await writeData(data);
+      res.json({ clicks: data.links[linkIndex].clicks });
     } else {
       res.status(404).json({ error: 'Link not found' });
     }
@@ -271,9 +296,21 @@ app.get('/debug', (req, res) => {
       dataExists: fs.existsSync(dataFilePath),
       dataContent: fs.existsSync(dataFilePath) ? JSON.parse(fs.readFileSync(dataFilePath, 'utf8')) : 'not found',
       workingDir: __dirname,
-      publicPath: publicPath
+      publicPath: publicPath,
+      isWriting: isWriting
     };
     res.json(files);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Force save endpoint (for testing)
+app.post('/api/force-save', async (req, res) => {
+  try {
+    const data = readData();
+    await writeData(data);
+    res.json({ success: true, message: 'Data force saved' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -319,7 +356,8 @@ app.get('/health', (req, res) => {
   res.json({ 
     status: 'OK', 
     timestamp: new Date().toISOString(),
-    dataFileExists: fs.existsSync(dataFilePath)
+    dataFileExists: fs.existsSync(dataFilePath),
+    isWriting: isWriting
   });
 });
 
