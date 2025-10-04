@@ -1,4 +1,4 @@
-# app.py - Full Working Version
+# app.py - Full Working Version with Corrected Model Name
 
 import streamlit as st
 import io
@@ -111,8 +111,8 @@ def analyze_resume_with_gemini(resume_text, api_key):
     """
 
     try:
-        # Using the correct and stable model name
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # Using the UPDATED and correct model name
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
