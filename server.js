@@ -1,3 +1,6 @@
+// Load environment variables from .env file
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -7,8 +10,8 @@ const app = express();
 const port = process.env.PORT || 10000;
 
 // GitHub configuration
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN || 'your-github-token-here';
-const GIST_ID = process.env.GIST_ID || 'your-gist-id-here';
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+const GIST_ID = process.env.GIST_ID || 'bd044441c90c6789bfa8c7b730b09226';
 
 // Add error handlers
 process.on('uncaughtException', (err) => {
@@ -44,12 +47,27 @@ let syncInProgress = false;
 // GitHub Gist API functions
 async function fetchGist() {
   try {
+    if (!GITHUB_TOKEN) {
+      console.error('❌ GitHub token not configured in .env file');
+      return dataCache;
+    }
+    
+    if (!GIST_ID) {
+      console.error('❌ Gist ID not configured');
+      return dataCache;
+    }
+    
     const response = await axios.get(`https://api.github.com/gists/${GIST_ID}`, {
       headers: {
         'Authorization': `token ${GITHUB_TOKEN}`,
         'User-Agent': 'Droneplus-App'
       }
     });
+    
+    if (!response.data.files || !response.data.files['links.json']) {
+      console.error('❌ links.json file not found in gist');
+      return dataCache;
+    }
     
     const content = response.data.files['links.json'].content;
     const data = JSON.parse(content);
@@ -60,7 +78,14 @@ async function fetchGist() {
     console.log(`✅ Synced from GitHub: ${data.links.length} links, ${data.activities.length} activities`);
     return data;
   } catch (error) {
-    console.error('❌ Error fetching gist:', error.message);
+    console.error('❌ Error fetching gist:', error.response?.status, error.response?.statusText || error.message);
+    
+    if (error.response?.status === 401) {
+      console.error('❌ GitHub token is invalid or expired. Please update your .env file.');
+    } else if (error.response?.status === 404) {
+      console.error('❌ Gist not found. Check your GIST_ID in .env file.');
+    }
+    
     return dataCache; // Return cached data on error
   }
 }
@@ -74,6 +99,11 @@ async function updateGist(data) {
   syncInProgress = true;
   
   try {
+    if (!GITHUB_TOKEN) {
+      console.error('❌ GitHub token not configured');
+      return false;
+    }
+    
     const response = await axios.patch(`https://api.github.com/gists/${GIST_ID}`, {
       files: {
         "links.json": {
@@ -93,7 +123,7 @@ async function updateGist(data) {
     console.log(`✅ Updated GitHub: ${data.links.length} links, ${data.activities.length} activities`);
     return true;
   } catch (error) {
-    console.error('❌ Error updating gist:', error.message);
+    console.error('❌ Error updating gist:', error.response?.status, error.response?.statusText || error.message);
     return false;
   } finally {
     syncInProgress = false;
@@ -102,11 +132,6 @@ async function updateGist(data) {
 
 // Initialize data from GitHub
 async function initializeData() {
-  if (!GITHUB_TOKEN || !GIST_ID) {
-    console.error('❌ GitHub token or Gist ID not configured!');
-    return;
-  }
-  
   await fetchGist();
   
   // Auto-sync every 5 minutes
@@ -361,7 +386,9 @@ app.get('/debug', (req, res) => {
       syncInProgress: syncInProgress,
       githubConfigured: !!(GITHUB_TOKEN && GIST_ID),
       githubTokenSet: !!GITHUB_TOKEN,
-      gistIdSet: !!GIST_ID
+      gistIdSet: !!GIST_ID,
+      gistUrl: `https://gist.github.com/dkruban/${GIST_ID}`,
+      envFileExists: fs.existsSync(path.join(__dirname, '.env'))
     };
     res.json(files);
   } catch (error) {
@@ -420,7 +447,9 @@ app.get('/health', (req, res) => {
 const server = app.listen(port, () => {
   console.log(`🚁 Droneplus server listening at http://localhost:${port}`);
   console.log(`📊 GitHub Gist configured: ${!!(GITHUB_TOKEN && GIST_ID)}`);
+  console.log(`📝 Gist URL: https://gist.github.com/dkruban/${GIST_ID}`);
   console.log(`📝 Loaded ${dataCache.links.length} links from GitHub`);
+  console.log(`🔧 Using .env file: ${fs.existsSync(path.join(__dirname, '.env'))}`);
 });
 
 server.on('error', (err) => {
