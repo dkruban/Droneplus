@@ -4,6 +4,7 @@
   "description": "Droneplus Link Manager",
   "main": "server.js",
   "scripts": {
+    "prestart": "mkdir -p /opt/render/project/data",
     "start": "node server.js"
   },
   "dependencies": {
