@@ -9,8 +9,18 @@ const port = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Serve static files from the public directory
-app.use(express.static(path.join(__dirname, 'public')));
+// Check multiple possible locations for static files
+const publicPath = path.join(__dirname, 'public');
+const rootPath = __dirname;
+
+// Use public directory if it exists, otherwise use root
+if (fs.existsSync(publicPath)) {
+  console.log('Serving static files from public directory');
+  app.use(express.static(publicPath));
+} else {
+  console.log('Serving static files from root directory');
+  app.use(express.static(rootPath));
+}
 
 // Data file path - store in the root directory
 const dataFilePath = path.join(__dirname, 'data.json');
@@ -18,6 +28,7 @@ const dataFilePath = path.join(__dirname, 'data.json');
 // Initialize data file if it doesn't exist
 if (!fs.existsSync(dataFilePath)) {
   fs.writeFileSync(dataFilePath, JSON.stringify({ links: [], activities: [] }));
+  console.log('Created data.json file');
 }
 
 // Helper function to read data
@@ -193,43 +204,133 @@ app.get('/api/activities', (req, res) => {
   res.json(data.activities);
 });
 
-// Serve the main page - with better error handling
+// Debug endpoint to check file structure
+app.get('/debug', (req, res) => {
+  const files = {
+    root: fs.readdirSync(rootPath),
+    public: fs.existsSync(publicPath) ? fs.readdirSync(publicPath) : 'not found',
+    publicExists: fs.existsSync(publicPath),
+    indexInRoot: fs.existsSync(path.join(rootPath, 'index.html')),
+    indexInPublic: fs.existsSync(path.join(publicPath, 'index.html')),
+    dataExists: fs.existsSync(dataFilePath),
+    workingDir: __dirname,
+    publicPath: publicPath
+  };
+  res.json(files);
+});
+
+// Serve the main page - with comprehensive path checking
 app.get('/', (req, res) => {
-  const indexPath = path.join(__dirname, 'public', 'index.html');
+  // Check multiple possible locations for index.html
+  const possiblePaths = [
+    path.join(publicPath, 'index.html'),
+    path.join(rootPath, 'index.html'),
+    path.join(__dirname, 'public', 'index.html'),
+    path.join(__dirname, 'index.html')
+  ];
   
-  if (fs.existsSync(indexPath)) {
+  let indexPath = null;
+  for (const possiblePath of possiblePaths) {
+    if (fs.existsSync(possiblePath)) {
+      indexPath = possiblePath;
+      console.log(`Found index.html at: ${indexPath}`);
+      break;
+    }
+  }
+  
+  if (indexPath) {
     res.sendFile(indexPath);
   } else {
-    // If index.html doesn't exist, create a basic one
-    const basicHtml = `
+    // Create a comprehensive error page with debug info
+    const debugInfo = {
+      workingDir: __dirname,
+      publicPath: publicPath,
+      publicExists: fs.existsSync(publicPath),
+      checkedPaths: possiblePaths,
+      allFiles: fs.readdirSync(rootPath),
+      publicFiles: fs.existsSync(publicPath) ? fs.readdirSync(publicPath) : []
+    };
+    
+    const errorHtml = `
     <!DOCTYPE html>
     <html>
     <head>
-        <title>Droneplus - Setup Required</title>
+        <title>Droneplus - Debug Info</title>
         <style>
-            body { font-family: Arial, sans-serif; padding: 20px; background: #0a0a0a; color: white; }
-            .container { max-width: 800px; margin: 0 auto; }
+            body { 
+                font-family: 'Courier New', monospace; 
+                padding: 20px; 
+                background: #0a0a0a; 
+                color: white; 
+                line-height: 1.6;
+            }
+            .container { max-width: 1000px; margin: 0 auto; }
             .error { color: #ff453a; }
             .success { color: #32d74b; }
+            .warning { color: #ff9f1a; }
+            .debug { 
+                background: rgba(255,255,255,0.1); 
+                padding: 15px; 
+                border-radius: 8px; 
+                margin: 10px 0;
+                white-space: pre-wrap;
+                font-size: 12px;
+            }
+            button { 
+                background: #0a84ff; 
+                color: white; 
+                border: none; 
+                padding: 10px 20px; 
+                border-radius: 5px; 
+                cursor: pointer;
+                margin: 5px;
+            }
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>Droneplus Server</h1>
+            <h1>🚁 Droneplus Debug Information</h1>
             <p class="success">✅ Server is running successfully!</p>
-            <p class="error">⚠️ public/index.html file not found. Please check your file structure.</p>
-            <h3>API Endpoints Available:</h3>
-            <ul>
-                <li>GET /api/links - Get all links</li>
-                <li>POST /api/links - Add a new link</li>
-                <li>PUT /api/links/:id - Update a link</li>
-                <li>DELETE /api/links/:id - Delete a link</li>
-                <li>GET /api/activities - Get activities</li>
-            </ul>
+            <p class="error">❌ index.html file not found in any expected location</p>
+            
+            <h2>🔍 Debug Information:</h2>
+            <div class="debug">${JSON.stringify(debugInfo, null, 2)}</div>
+            
+            <h2>🛠️ Solutions:</h2>
+            <ol>
+                <li>Move index.html to the root directory of your repository</li>
+                <li>Or ensure it's in a 'public' directory</li>
+                <li>Check that the file is named exactly 'index.html' (lowercase)</li>
+            </ol>
+            
+            <h2>📋 Test API:</h2>
+            <button onclick="testAPI()">Test API Endpoints</button>
+            <div id="apiResults"></div>
         </div>
+        
+        <script>
+            async function testAPI() {
+                const results = document.getElementById('apiResults');
+                results.innerHTML = '<div class="debug">Testing API...</div>';
+                
+                try {
+                    const links = await fetch('/api/links').then(r => r.json());
+                    const activities = await fetch('/api/activities').then(r => r.json());
+                    results.innerHTML = \`
+                        <div class="debug">
+API Test Results:
+Links: \${JSON.stringify(links, null, 2)}
+Activities: \${JSON.stringify(activities, null, 2)}
+                        </div>
+                    \`;
+                } catch (error) {
+                    results.innerHTML = \`<div class="error">API Error: \${error.message}</div>\`;
+                }
+            }
+        </script>
     </body>
     </html>`;
-    res.send(basicHtml);
+    res.send(errorHtml);
   }
 });
 
@@ -240,4 +341,7 @@ app.get('/health', (req, res) => {
 
 app.listen(port, () => {
   console.log(`Droneplus server listening at http://localhost:${port}`);
+  console.log(`Working directory: ${__dirname}`);
+  console.log(`Public directory: ${publicPath}`);
+  console.log(`Public exists: ${fs.existsSync(publicPath)}`);
 });
