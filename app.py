@@ -4,7 +4,14 @@ import streamlit as st
 import io
 import PyPDF2
 import os
-import google.generativeai as genai
+import sys
+
+# Try to import the Google Generative AI library
+try:
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
@@ -73,6 +80,10 @@ def extract_text_from_pdf(pdf_file):
 
 def analyze_resume_with_gemini(resume_text, api_key):
     """Sends resume text to Google Gemini for analysis."""
+    if not GEMINI_AVAILABLE:
+        st.error("Google Generative AI library is not installed. Please check your requirements.txt file.")
+        return None
+        
     genai.configure(api_key=api_key)
     
     prompt = f"""
@@ -157,7 +168,10 @@ def parse_analysis(analysis_text):
 # --- SIDEBAR ---
 with st.sidebar:
     st.title("⚙️ App Info")
-    st.info("This app is deployed on Render. Your Gemini API key is securely configured as an environment variable.")
+    if GEMINI_AVAILABLE:
+        st.info("This app is deployed on Render. Your Gemini API key is securely configured as an environment variable.")
+    else:
+        st.error("Google Generative AI library is not installed. Please check your requirements.txt file.")
 
 # --- MAIN PAGE ---
 st.markdown("<h1 style='text-align: center; color: white; padding: 1rem;'>Welcome to Resume Analyzer Pro 🚀</h1>", unsafe_allow_html=True)
