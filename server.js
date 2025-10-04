@@ -31,8 +31,21 @@ if (fs.existsSync(publicPath)) {
   app.use(express.static(rootPath));
 }
 
-// Data file path - store in the root directory
-const dataFilePath = path.join(__dirname, 'data.json');
+// Use Render's persistent disk for data storage
+const dataDir = '/opt/render/project/data';
+const dataFilePath = path.join(dataDir, 'data.json');
+
+// Create data directory if it doesn't exist
+function ensureDataDir() {
+  try {
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+      console.log(`Created data directory: ${dataDir}`);
+    }
+  } catch (error) {
+    console.error('Error creating data directory:', error);
+  }
+}
 
 // Lock mechanism to prevent race conditions
 let isWriting = false;
@@ -40,12 +53,13 @@ let isWriting = false;
 // Initialize data file if it doesn't exist
 function initializeDataFile() {
   try {
+    ensureDataDir();
     if (!fs.existsSync(dataFilePath)) {
       const initialData = { links: [], activities: [] };
       fs.writeFileSync(dataFilePath, JSON.stringify(initialData, null, 2));
-      console.log('Created data.json file');
+      console.log('Created data.json file at:', dataFilePath);
     } else {
-      console.log('data.json file exists');
+      console.log('data.json file exists at:', dataFilePath);
     }
   } catch (error) {
     console.error('Error initializing data file:', error);
@@ -91,6 +105,7 @@ function writeData(data, retries = 3) {
     
     isWriting = true;
     try {
+      ensureDataDir(); // Ensure directory exists before writing
       const jsonString = JSON.stringify(data, null, 2);
       fs.writeFileSync(dataFilePath, jsonString);
       console.log(`Data saved: ${data.links.length} links, ${data.activities.length} activities`);
@@ -297,6 +312,8 @@ app.get('/debug', (req, res) => {
       dataContent: fs.existsSync(dataFilePath) ? JSON.parse(fs.readFileSync(dataFilePath, 'utf8')) : 'not found',
       workingDir: __dirname,
       publicPath: publicPath,
+      dataDir: dataDir,
+      dataDirExists: fs.existsSync(dataDir),
       isWriting: isWriting
     };
     res.json(files);
@@ -305,12 +322,27 @@ app.get('/debug', (req, res) => {
   }
 });
 
-// Force save endpoint (for testing)
-app.post('/api/force-save', async (req, res) => {
+// Backup/Restore endpoints
+app.post('/api/backup', (req, res) => {
   try {
     const data = readData();
-    await writeData(data);
-    res.json({ success: true, message: 'Data force saved' });
+    const backupPath = path.join(dataDir, `backup-${Date.now()}.json`);
+    fs.writeFileSync(backupPath, JSON.stringify(data, null, 2));
+    res.json({ success: true, backupPath });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/restore', (req, res) => {
+  try {
+    const { data } = req.body;
+    if (data) {
+      writeData(data);
+      res.json({ success: true });
+    } else {
+      res.status(400).json({ error: 'No data provided' });
+    }
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -357,6 +389,7 @@ app.get('/health', (req, res) => {
     status: 'OK', 
     timestamp: new Date().toISOString(),
     dataFileExists: fs.existsSync(dataFilePath),
+    dataDirExists: fs.existsSync(dataDir),
     isWriting: isWriting
   });
 });
@@ -365,6 +398,7 @@ app.get('/health', (req, res) => {
 const server = app.listen(port, () => {
   console.log(`Droneplus server listening at http://localhost:${port}`);
   console.log(`Working directory: ${__dirname}`);
+  console.log(`Data directory: ${dataDir}`);
   console.log(`Data file: ${dataFilePath}`);
 });
 
