@@ -1,14 +1,19 @@
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
+const fs = require('fs');
 const admin = require('firebase-admin');
-const serviceAccount = require('./serviceAccountKey.json');
 const app = express();
 const port = process.env.PORT || 10000;
 
-// Initialize Firebase Admin SDK
+// Initialize Firebase Admin SDK with environment variables
 admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-  databaseURL: "https://droneplus-links-default-rtdb.firebaseio.com"
+  credential: admin.credential.cert({
+    projectId: process.env.FIREBASE_PROJECT_ID,
+    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+    privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
+  }),
+  databaseURL: `https://${process.env.FIREBASE_PROJECT_ID}-default-rtdb.firebaseio.com`
 });
 
 const db = admin.firestore();
@@ -275,7 +280,12 @@ app.get('/debug', (req, res) => {
   res.json({
     status: 'Firebase connected',
     timestamp: new Date().toISOString(),
-    uptime: process.uptime()
+    uptime: process.uptime(),
+    envVars: {
+      projectId: process.env.FIREBASE_PROJECT_ID ? 'Set' : 'Not set',
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL ? 'Set' : 'Not set',
+      privateKey: process.env.FIREBASE_PRIVATE_KEY ? 'Set' : 'Not set'
+    }
   });
 });
 
@@ -320,14 +330,20 @@ app.get('/health', (req, res) => {
     status: 'OK', 
     timestamp: new Date().toISOString(),
     database: 'Firebase Firestore',
-    uptime: process.uptime()
+    uptime: process.uptime(),
+    envVarsSet: {
+      projectId: !!process.env.FIREBASE_PROJECT_ID,
+      clientEmail: !!process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: !!process.env.FIREBASE_PRIVATE_KEY
+    }
   });
 });
 
 // Start server with error handling
 const server = app.listen(port, () => {
-  console.log(`Droneplus server listening at http://localhost:${port}`);
-  console.log(`Connected to Firebase Firestore`);
+  console.log(`🚁 Droneplus server listening at http://localhost:${port}`);
+  console.log(`📊 Connected to Firebase Firestore`);
+  console.log(`🔧 Using environment variables for Firebase credentials`);
 });
 
 server.on('error', (err) => {
