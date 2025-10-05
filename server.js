@@ -1,17 +1,17 @@
-// Load environment variables from .env file
-require('dotenv').config();
-
 const express = require('express');
 const cors = require('cors');
-const axios = require('axios');
-const fs = require('fs');
-const path = require('path');
+const admin = require('firebase-admin');
+const serviceAccount = require('./serviceAccountKey.json');
 const app = express();
 const port = process.env.PORT || 10000;
 
-// GitHub configuration
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
-const GIST_ID = process.env.GIST_ID || 'bd044441c90c6789bfa8c7b730b09226';
+// Initialize Firebase Admin SDK
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+  databaseURL: "https://droneplus-links-default-rtdb.firebaseio.com"
+});
+
+const db = admin.firestore();
 
 // Add error handlers
 process.on('uncaughtException', (err) => {
@@ -39,134 +39,22 @@ if (fs.existsSync(publicPath)) {
   app.use(express.static(rootPath));
 }
 
-// Local cache for performance
-let dataCache = { links: [], activities: [] };
-let lastSyncTime = Date.now();
-let syncInProgress = false;
-
-// GitHub Gist API functions
-async function fetchGist() {
-  try {
-    if (!GITHUB_TOKEN) {
-      console.error('❌ GitHub token not configured in .env file');
-      return dataCache;
-    }
-    
-    if (!GIST_ID) {
-      console.error('❌ Gist ID not configured');
-      return dataCache;
-    }
-    
-    const response = await axios.get(`https://api.github.com/gists/${GIST_ID}`, {
-      headers: {
-        'Authorization': `token ${GITHUB_TOKEN}`,
-        'User-Agent': 'Droneplus-App'
-      }
-    });
-    
-    if (!response.data.files || !response.data.files['links.json']) {
-      console.error('❌ links.json file not found in gist');
-      return dataCache;
-    }
-    
-    const content = response.data.files['links.json'].content;
-    const data = JSON.parse(content);
-    
-    dataCache = data;
-    lastSyncTime = Date.now();
-    
-    console.log(`✅ Synced from GitHub: ${data.links.length} links, ${data.activities.length} activities`);
-    return data;
-  } catch (error) {
-    console.error('❌ Error fetching gist:', error.response?.status, error.response?.statusText || error.message);
-    
-    if (error.response?.status === 401) {
-      console.error('❌ GitHub token is invalid or expired. Please update your .env file.');
-    } else if (error.response?.status === 404) {
-      console.error('❌ Gist not found. Check your GIST_ID in .env file.');
-    }
-    
-    return dataCache; // Return cached data on error
-  }
-}
-
-async function updateGist(data) {
-  if (syncInProgress) {
-    console.log('⏳ Sync already in progress, skipping...');
-    return false;
-  }
-  
-  syncInProgress = true;
-  
-  try {
-    if (!GITHUB_TOKEN) {
-      console.error('❌ GitHub token not configured');
-      return false;
-    }
-    
-    const response = await axios.patch(`https://api.github.com/gists/${GIST_ID}`, {
-      files: {
-        "links.json": {
-          content: JSON.stringify(data, null, 2)
-        }
-      }
-    }, {
-      headers: {
-        'Authorization': `token ${GITHUB_TOKEN}`,
-        'User-Agent': 'Droneplus-App'
-      }
-    });
-    
-    dataCache = data;
-    lastSyncTime = Date.now();
-    
-    console.log(`✅ Updated GitHub: ${data.links.length} links, ${data.activities.length} activities`);
-    return true;
-  } catch (error) {
-    console.error('❌ Error updating gist:', error.response?.status, error.response?.statusText || error.message);
-    return false;
-  } finally {
-    syncInProgress = false;
-  }
-}
-
-// Initialize data from GitHub
-async function initializeData() {
-  await fetchGist();
-  
-  // Auto-sync every 5 minutes
-  setInterval(async () => {
-    if (Date.now() - lastSyncTime > 4 * 60 * 1000) { // 4 minutes
-      await fetchGist();
-    }
-  }, 5 * 60 * 1000); // 5 minutes
-}
-
-// Initialize on startup
-initializeData();
-
-// Helper functions
-function readData() {
-  return dataCache;
-}
-
-async function writeData(data) {
-  const success = await updateGist(data);
-  if (success) {
-    dataCache = data;
-  }
-  return success;
-}
-
 // API Routes
 
 // Get all links
 app.get('/api/links', async (req, res) => {
   try {
-    const data = await fetchGist();
-    res.json(data.links);
+    const linksSnapshot = await db.collection('links').orderBy('createdAt', 'desc').get();
+    const links = [];
+    
+    linksSnapshot.forEach(doc => {
+      links.push({ id: doc.id, ...doc.data() });
+    });
+    
+    console.log(`Fetched ${links.length} links from Firebase`);
+    res.json(links);
   } catch (error) {
-    console.error('Error in /api/links:', error);
+    console.error('Error fetching links:', error);
     res.status(500).json({ error: 'Failed to fetch links' });
   }
 });
@@ -177,45 +65,31 @@ app.post('/api/links', async (req, res) => {
     const { name, url, description, category } = req.body;
     console.log('Adding link:', { name, url, description, category });
     
-    // Get current data
-    const data = await fetchGist();
-    
     const newLink = {
-      id: Date.now().toString(36) + Math.random().toString(36).substr(2),
       name,
       url,
       description,
       category,
       clicks: 0,
-      createdAt: new Date().toISOString(),
-      permanent: true
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
     };
     
-    // Add new link to the beginning of the array
-    data.links.unshift(newLink);
+    const docRef = await db.collection('links').add(newLink);
     
     // Add activity
-    data.activities.unshift({
-      id: Date.now().toString(36) + Math.random().toString(36).substr(2),
+    await db.collection('activities').add({
       type: 'added',
       linkName: name,
-      timestamp: new Date().toISOString()
+      linkId: docRef.id,
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
     });
     
-    // Keep only last 50 activities
-    if (data.activities.length > 50) data.activities.pop();
-    
-    // Update GitHub
-    const success = await updateGist(data);
-    
-    if (success) {
-      console.log('Link added successfully:', newLink.id);
-      res.json(newLink);
-    } else {
-      res.status(500).json({ error: 'Failed to save link to GitHub' });
-    }
+    const savedLink = { id: docRef.id, ...newLink };
+    console.log('Link added successfully:', docRef.id);
+    res.json(savedLink);
   } catch (error) {
-    console.error('Error in POST /api/links:', error);
+    console.error('Error adding link:', error);
     res.status(500).json({ error: 'Failed to add link' });
   }
 });
@@ -226,43 +100,31 @@ app.put('/api/links/:id', async (req, res) => {
     const { id } = req.params;
     const { name, url, description, category } = req.body;
     
-    const data = await fetchGist();
-    const linkIndex = data.links.findIndex(link => link.id === id);
+    const updatedLink = {
+      name,
+      url,
+      description,
+      category,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    };
     
-    if (linkIndex !== -1) {
-      data.links[linkIndex] = {
-        ...data.links[linkIndex],
-        name,
-        url,
-        description,
-        category,
-        updatedAt: new Date().toISOString(),
-        permanent: true
-      };
-      
-      // Add activity
-      data.activities.unshift({
-        id: Date.now().toString(36) + Math.random().toString(36).substr(2),
-        type: 'edited',
-        linkName: name,
-        timestamp: new Date().toISOString()
-      });
-      
-      // Keep only last 50 activities
-      if (data.activities.length > 50) data.activities.pop();
-      
-      const success = await updateGist(data);
-      
-      if (success) {
-        res.json(data.links[linkIndex]);
-      } else {
-        res.status(500).json({ error: 'Failed to update link' });
-      }
-    } else {
-      res.status(404).json({ error: 'Link not found' });
-    }
+    await db.collection('links').doc(id).update(updatedLink);
+    
+    // Add activity
+    await db.collection('activities').add({
+      type: 'edited',
+      linkName: name,
+      linkId: id,
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+    
+    const linkDoc = await db.collection('links').doc(id).get();
+    const savedLink = { id: linkDoc.id, ...linkDoc.data() };
+    
+    console.log('Link updated successfully:', id);
+    res.json(savedLink);
   } catch (error) {
-    console.error('Error in PUT /api/links:', error);
+    console.error('Error updating link:', error);
     res.status(500).json({ error: 'Failed to update link' });
   }
 });
@@ -271,37 +133,25 @@ app.put('/api/links/:id', async (req, res) => {
 app.delete('/api/links/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const data = await fetchGist();
     
-    const linkIndex = data.links.findIndex(link => link.id === id);
+    // Get link name before deletion for activity log
+    const linkDoc = await db.collection('links').doc(id).get();
+    const linkName = linkDoc.data().name;
     
-    if (linkIndex !== -1) {
-      const linkName = data.links[linkIndex].name;
-      data.links.splice(linkIndex, 1);
-      
-      // Add activity
-      data.activities.unshift({
-        id: Date.now().toString(36) + Math.random().toString(36).substr(2),
-        type: 'deleted',
-        linkName,
-        timestamp: new Date().toISOString()
-      });
-      
-      // Keep only last 50 activities
-      if (data.activities.length > 50) data.activities.pop();
-      
-      const success = await updateGist(data);
-      
-      if (success) {
-        res.json({ success: true });
-      } else {
-        res.status(500).json({ error: 'Failed to delete link' });
-      }
-    } else {
-      res.status(404).json({ error: 'Link not found' });
-    }
+    await db.collection('links').doc(id).delete();
+    
+    // Add activity
+    await db.collection('activities').add({
+      type: 'deleted',
+      linkName: linkName,
+      linkId: id,
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+    
+    console.log('Link deleted successfully:', id);
+    res.json({ success: true });
   } catch (error) {
-    console.error('Error in DELETE /api/links:', error);
+    console.error('Error deleting link:', error);
     res.status(500).json({ error: 'Failed to delete link' });
   }
 });
@@ -310,36 +160,27 @@ app.delete('/api/links/:id', async (req, res) => {
 app.post('/api/links/:id/click', async (req, res) => {
   try {
     const { id } = req.params;
-    const data = await fetchGist();
     
-    const linkIndex = data.links.findIndex(link => link.id === id);
+    const linkRef = db.collection('links').doc(id);
+    await linkRef.update({
+      clicks: admin.firestore.FieldValue.increment(1)
+    });
     
-    if (linkIndex !== -1) {
-      data.links[linkIndex].clicks++;
-      
-      // Add activity
-      data.activities.unshift({
-        id: Date.now().toString(36) + Math.random().toString(36).substr(2),
-        type: 'clicked',
-        linkName: data.links[linkIndex].name,
-        timestamp: new Date().toISOString()
-      });
-      
-      // Keep only last 50 activities
-      if (data.activities.length > 50) data.activities.pop();
-      
-      const success = await updateGist(data);
-      
-      if (success) {
-        res.json({ clicks: data.links[linkIndex].clicks });
-      } else {
-        res.status(500).json({ error: 'Failed to update clicks' });
-      }
-    } else {
-      res.status(404).json({ error: 'Link not found' });
-    }
+    const updatedDoc = await linkRef.get();
+    const linkData = updatedDoc.data();
+    
+    // Add activity
+    await db.collection('activities').add({
+      type: 'clicked',
+      linkName: linkData.name,
+      linkId: id,
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+    
+    console.log('Link click incremented:', id);
+    res.json({ clicks: linkData.clicks });
   } catch (error) {
-    console.error('Error in POST /api/links/:id/click:', error);
+    console.error('Error incrementing clicks:', error);
     res.status(500).json({ error: 'Failed to update clicks' });
   }
 });
@@ -347,53 +188,95 @@ app.post('/api/links/:id/click', async (req, res) => {
 // Get activities
 app.get('/api/activities', async (req, res) => {
   try {
-    const data = await fetchGist();
-    res.json(data.activities);
+    const activitiesSnapshot = await db.collection('activities')
+      .orderBy('timestamp', 'desc')
+      .limit(50)
+      .get();
+    
+    const activities = [];
+    
+    activitiesSnapshot.forEach(doc => {
+      const activity = doc.data();
+      activities.push({
+        id: doc.id,
+        ...activity,
+        timestamp: activity.timestamp.toDate().toISOString()
+      });
+    });
+    
+    console.log(`Fetched ${activities.length} activities from Firebase`);
+    res.json(activities);
   } catch (error) {
-    console.error('Error in /api/activities:', error);
+    console.error('Error fetching activities:', error);
     res.status(500).json({ error: 'Failed to fetch activities' });
   }
 });
 
-// Sync endpoint
-app.post('/api/sync', async (req, res) => {
+// Export all data for backup
+app.get('/api/export', async (req, res) => {
   try {
-    const data = await fetchGist();
-    res.json({ 
-      success: true, 
-      message: 'Synced from GitHub',
-      linksCount: data.links.length,
-      lastSync: new Date().toISOString()
+    const linksSnapshot = await db.collection('links').get();
+    const links = [];
+    
+    linksSnapshot.forEach(doc => {
+      const link = doc.data();
+      links.push({
+        id: doc.id,
+        ...link,
+        createdAt: link.createdAt.toDate().toISOString(),
+        updatedAt: link.updatedAt.toDate().toISOString()
+      });
     });
+    
+    res.json({ links, exportedAt: new Date().toISOString() });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('Error exporting data:', error);
+    res.status(500).json({ error: 'Failed to export data' });
+  }
+});
+
+// Import data from backup
+app.post('/api/import', async (req, res) => {
+  try {
+    const { links } = req.body;
+    
+    if (!links || !Array.isArray(links)) {
+      return res.status(400).json({ error: 'Invalid data format' });
+    }
+    
+    const batch = db.batch();
+    
+    links.forEach(link => {
+      const linkRef = db.collection('links').doc();
+      const linkData = {
+        name: link.name,
+        url: link.url,
+        description: link.description,
+        category: link.category,
+        clicks: link.clicks || 0,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      };
+      batch.set(linkRef, linkData);
+    });
+    
+    await batch.commit();
+    
+    console.log(`Imported ${links.length} links`);
+    res.json({ success: true, imported: links.length });
+  } catch (error) {
+    console.error('Error importing data:', error);
+    res.status(500).json({ error: 'Failed to import data' });
   }
 });
 
 // Debug endpoint
 app.get('/debug', (req, res) => {
-  try {
-    const files = {
-      root: fs.readdirSync(rootPath),
-      public: fs.existsSync(publicPath) ? fs.readdirSync(publicPath) : 'not found',
-      publicExists: fs.existsSync(publicPath),
-      indexInRoot: fs.existsSync(path.join(rootPath, 'index.html')),
-      indexInPublic: fs.existsSync(path.join(publicPath, 'index.html')),
-      workingDir: __dirname,
-      publicPath: publicPath,
-      cacheSize: dataCache.links.length,
-      lastSyncTime: new Date(lastSyncTime).toISOString(),
-      syncInProgress: syncInProgress,
-      githubConfigured: !!(GITHUB_TOKEN && GIST_ID),
-      githubTokenSet: !!GITHUB_TOKEN,
-      gistIdSet: !!GIST_ID,
-      gistUrl: `https://gist.github.com/dkruban/${GIST_ID}`,
-      envFileExists: fs.existsSync(path.join(__dirname, '.env'))
-    };
-    res.json(files);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+  res.json({
+    status: 'Firebase connected',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
 });
 
 // Serve the main page
@@ -436,20 +319,15 @@ app.get('/health', (req, res) => {
   res.json({ 
     status: 'OK', 
     timestamp: new Date().toISOString(),
-    linksCount: dataCache.links.length,
-    lastSyncTime: new Date(lastSyncTime).toISOString(),
-    githubConfigured: !!(GITHUB_TOKEN && GIST_ID),
+    database: 'Firebase Firestore',
     uptime: process.uptime()
   });
 });
 
 // Start server with error handling
 const server = app.listen(port, () => {
-  console.log(`🚁 Droneplus server listening at http://localhost:${port}`);
-  console.log(`📊 GitHub Gist configured: ${!!(GITHUB_TOKEN && GIST_ID)}`);
-  console.log(`📝 Gist URL: https://gist.github.com/dkruban/${GIST_ID}`);
-  console.log(`📝 Loaded ${dataCache.links.length} links from GitHub`);
-  console.log(`🔧 Using .env file: ${fs.existsSync(path.join(__dirname, '.env'))}`);
+  console.log(`Droneplus server listening at http://localhost:${port}`);
+  console.log(`Connected to Firebase Firestore`);
 });
 
 server.on('error', (err) => {
