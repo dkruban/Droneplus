@@ -6,7 +6,13 @@
     <title>Droneplus - Advanced Link Management System</title>
     <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+    
     <style>
+        /* All your existing CSS styles here */
         :root {
             --primary-color: #0a84ff;
             --secondary-color: #32d74b;
@@ -698,6 +704,30 @@
             to { transform: rotate(360deg); }
         }
 
+        /* Firebase Status */
+        .firebase-status {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            z-index: 100;
+        }
+
+        .firebase-status.connected {
+            background: rgba(50, 215, 75, 0.2);
+            color: var(--secondary-color);
+        }
+
+        .firebase-status.disconnected {
+            background: rgba(255, 69, 58, 0.2);
+            color: var(--accent-color);
+        }
+
         /* Responsive Design */
         @media (max-width: 768px) {
             .logo {
@@ -727,6 +757,12 @@
     </style>
 </head>
 <body>
+    <!-- Firebase Status Indicator -->
+    <div id="firebaseStatus" class="firebase-status disconnected">
+        <i class="fas fa-circle"></i>
+        <span>Connecting to Firebase...</span>
+    </div>
+
     <!-- Animated Background -->
     <div class="bg-animation" id="bgAnimation"></div>
 
@@ -924,15 +960,29 @@
     </div>
 
     <script>
+        // Initialize Firebase
+        const firebaseConfig = {
+            apiKey: "AIzaSyDRCG9jdERQWhZRR1MchuzX3JsiybYYbH8",
+            authDomain: "droneplus-964c5.firebaseapp.com",
+            projectId: "droneplus-964c5",
+            storageBucket: "droneplus-964c5.firebasestorage.app",
+            messagingSenderId: "872809712359",
+            appId: "1:872809712359:web:b0962708c901d288dcf042",
+            measurementId: "G-N2FCKCXT6X"
+        };
+
+        // Initialize Firebase
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+        
         // Initialize app
         let links = [];
         let activities = [];
         let editingLinkId = null;
         let currentFilter = '';
         let currentSort = 'newest';
-
-        // API base URL
-        const API_BASE_URL = window.location.origin;
+        let linksListener = null;
+        let activitiesListener = null;
 
         // DOM Elements
         const addLinkForm = document.getElementById('addLinkForm');
@@ -947,6 +997,18 @@
         const searchInput = document.getElementById('searchInput');
         const categoryFilter = document.getElementById('categoryFilter');
         const sortBy = document.getElementById('sortBy');
+        const firebaseStatus = document.getElementById('firebaseStatus');
+
+        // Update Firebase connection status
+        function updateFirebaseStatus(connected) {
+            if (connected) {
+                firebaseStatus.className = 'firebase-status connected';
+                firebaseStatus.innerHTML = '<i class="fas fa-circle"></i><span>Connected to Firebase</span>';
+            } else {
+                firebaseStatus.className = 'firebase-status disconnected';
+                firebaseStatus.innerHTML = '<i class="fas fa-circle"></i><span>Disconnected from Firebase</span>';
+            }
+        }
 
         // Create floating particles
         function createParticles() {
@@ -981,138 +1043,140 @@
             return Date.now().toString(36) + Math.random().toString(36).substr(2);
         }
 
-        // Fetch data from API
-        async function fetchLinks() {
-            try {
-                const response = await fetch(`${API_BASE_URL}/api/links`);
-                if (response.ok) {
-                    links = await response.json();
+        // Set up real-time listeners
+        function setupRealtimeListeners() {
+            // Listen for links changes
+            linksListener = db.collection('links')
+                .orderBy('createdAt', 'desc')
+                .onSnapshot((snapshot) => {
+                    links = [];
+                    snapshot.forEach((doc) => {
+                        links.push({ id: doc.id, ...doc.data() });
+                    });
                     renderLinks();
                     updateDashboard();
-                } else {
-                    console.error('Failed to fetch links');
-                    showToast('Failed to fetch links', false);
-                }
-            } catch (error) {
-                console.error('Error fetching links:', error);
-                showToast('Error fetching links', false);
-            }
-        }
+                    updateFirebaseStatus(true);
+                }, (error) => {
+                    console.error('Error listening to links:', error);
+                    updateFirebaseStatus(false);
+                });
 
-        async function fetchActivities() {
-            try {
-                const response = await fetch(`${API_BASE_URL}/api/activities`);
-                if (response.ok) {
-                    activities = await response.json();
+            // Listen for activities changes
+            activitiesListener = db.collection('activities')
+                .orderBy('timestamp', 'desc')
+                .limit(50)
+                .onSnapshot((snapshot) => {
+                    activities = [];
+                    snapshot.forEach((doc) => {
+                        const activity = doc.data();
+                        activities.push({
+                            id: doc.id,
+                            ...activity,
+                            timestamp: activity.timestamp.toDate().toISOString()
+                        });
+                    });
                     updateActivityDisplay();
-                } else {
-                    console.error('Failed to fetch activities');
-                }
-            } catch (error) {
-                console.error('Error fetching activities:', error);
-            }
+                }, (error) => {
+                    console.error('Error listening to activities:', error);
+                });
         }
 
         // Add new link
         async function addLink(name, url, description, category) {
             try {
-                const response = await fetch(`${API_BASE_URL}/api/links`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ name, url, description, category }),
+                const newLink = {
+                    name,
+                    url,
+                    description,
+                    category,
+                    clicks: 0,
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                };
+                
+                await db.collection('links').add(newLink);
+                
+                // Add activity
+                await db.collection('activities').add({
+                    type: 'added',
+                    linkName: name,
+                    timestamp: firebase.firestore.FieldValue.serverTimestamp()
                 });
                 
-                if (response.ok) {
-                    const newLink = await response.json();
-                    links.unshift(newLink);
-                    renderLinks();
-                    updateDashboard();
-                    fetchActivities(); // Refresh activities
-                    showToast('Link added successfully!');
-                } else {
-                    console.error('Failed to add link');
-                    showToast('Failed to add link', false);
-                }
+                showToast('Link added successfully!');
             } catch (error) {
                 console.error('Error adding link:', error);
-                showToast('Error adding link', false);
+                showToast('Failed to add link', false);
             }
         }
 
         // Update link
         async function updateLink(id, name, url, description, category) {
             try {
-                const response = await fetch(`${API_BASE_URL}/api/links/${id}`, {
-                    method: 'PUT',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ name, url, description, category }),
+                await db.collection('links').doc(id).update({
+                    name,
+                    url,
+                    description,
+                    category,
+                    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
                 });
                 
-                if (response.ok) {
-                    const updatedLink = await response.json();
-                    const linkIndex = links.findIndex(link => link.id === id);
-                    if (linkIndex !== -1) {
-                        links[linkIndex] = updatedLink;
-                        renderLinks();
-                        updateDashboard();
-                        fetchActivities(); // Refresh activities
-                        showToast('Link updated successfully!');
-                    }
-                } else {
-                    console.error('Failed to update link');
-                    showToast('Failed to update link', false);
-                }
+                // Add activity
+                await db.collection('activities').add({
+                    type: 'edited',
+                    linkName: name,
+                    linkId: id,
+                    timestamp: firebase.firestore.FieldValue.serverTimestamp()
+                });
+                
+                showToast('Link updated successfully!');
             } catch (error) {
                 console.error('Error updating link:', error);
-                showToast('Error updating link', false);
+                showToast('Failed to update link', false);
             }
         }
 
         // Delete link
         async function deleteLink(id) {
             try {
-                const response = await fetch(`${API_BASE_URL}/api/links/${id}`, {
-                    method: 'DELETE',
+                // Get link name before deletion
+                const linkDoc = await db.collection('links').doc(id).get();
+                const linkName = linkDoc.data().name;
+                
+                await db.collection('links').doc(id).delete();
+                
+                // Add activity
+                await db.collection('activities').add({
+                    type: 'deleted',
+                    linkName: linkName,
+                    linkId: id,
+                    timestamp: firebase.firestore.FieldValue.serverTimestamp()
                 });
                 
-                if (response.ok) {
-                    links = links.filter(link => link.id !== id);
-                    renderLinks();
-                    updateDashboard();
-                    fetchActivities(); // Refresh activities
-                    showToast('Link deleted successfully!');
-                } else {
-                    console.error('Failed to delete link');
-                    showToast('Failed to delete link', false);
-                }
+                showToast('Link deleted successfully!');
             } catch (error) {
                 console.error('Error deleting link:', error);
-                showToast('Error deleting link', false);
+                showToast('Failed to delete link', false);
             }
         }
 
         // Increment link clicks
         async function incrementClick(id) {
             try {
-                const response = await fetch(`${API_BASE_URL}/api/links/${id}/click`, {
-                    method: 'POST',
+                await db.collection('links').doc(id).update({
+                    clicks: firebase.firestore.FieldValue.increment(1)
                 });
                 
-                if (response.ok) {
-                    const { clicks } = await response.json();
-                    const linkIndex = links.findIndex(link => link.id === id);
-                    if (linkIndex !== -1) {
-                        links[linkIndex].clicks = clicks;
-                        updateDashboard();
-                        fetchActivities(); // Refresh activities
-                    }
-                } else {
-                    console.error('Failed to increment clicks');
-                }
+                // Get link data for activity
+                const linkDoc = await db.collection('links').doc(id).get();
+                const linkData = linkDoc.data();
+                
+                // Add activity
+                await db.collection('activities').add({
+                    type: 'clicked',
+                    linkName: linkData.name,
+                    linkId: id,
+                    timestamp: firebase.firestore.FieldValue.serverTimestamp()
+                });
             } catch (error) {
                 console.error('Error incrementing clicks:', error);
             }
@@ -1141,10 +1205,18 @@
             // Apply sorting
             switch(currentSort) {
                 case 'newest':
-                    processedLinks.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+                    processedLinks.sort((a, b) => {
+                        const dateA = a.createdAt ? a.createdAt.toDate() : new Date(0);
+                        const dateB = b.createdAt ? b.createdAt.toDate() : new Date(0);
+                        return dateB - dateA;
+                    });
                     break;
                 case 'oldest':
-                    processedLinks.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+                    processedLinks.sort((a, b) => {
+                        const dateA = a.createdAt ? a.createdAt.toDate() : new Date(0);
+                        const dateB = b.createdAt ? b.createdAt.toDate() : new Date(0);
+                        return dateA - dateB;
+                    });
                     break;
                 case 'popular':
                     processedLinks.sort((a, b) => b.clicks - a.clicks);
@@ -1212,9 +1284,10 @@
             
             // Today's links
             const today = new Date().toDateString();
-            const todayLinks = links.filter(link => 
-                new Date(link.createdAt).toDateString() === today
-            ).length;
+            const todayLinks = links.filter(link => {
+                if (!link.createdAt) return false;
+                return link.createdAt.toDate().toDateString() === today;
+            }).length;
             document.getElementById('todayLinks').textContent = todayLinks;
             
             // Top category
@@ -1374,8 +1447,7 @@
 
         // Initialize app
         createParticles();
-        fetchLinks();
-        fetchActivities();
+        setupRealtimeListeners();
     </script>
 </body>
 </html>
